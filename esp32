@@ -13,18 +13,18 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 
-# ---------------- Serial config ----------------
+
 PORT = "COM3"
 BAUD = 115200
 
 
-# ---------------- Plot config ----------------
+
 WINDOW_SECONDS = 10.0
 MAX_POINTS = 800
 UI_REFRESH_MS = 50
 
 
-# ---------------- Shared state ----------------
+
 data_lock = threading.Lock()
 
 latest = {"s1": None, "s2": None, "s3": None, "s4": None, "t": 0.0}
@@ -94,7 +94,7 @@ def serial_reader(ser: serial.Serial, log_fn):
             time.sleep(0.1)
 
 
-# ----------- SIMULACIÓN (AGREGADO) -----------
+
 def simulation_mode(log_fn):
     global running
     t0 = time.time()
@@ -118,7 +118,7 @@ def simulation_mode(log_fn):
             s4_buf.append(s4)
 
         time.sleep(0.05)
-# ---------------------------------------------
+
 
 
 def send_led_code(ser: serial.Serial, code: int, log_fn):
@@ -139,19 +139,18 @@ def set_selected(varname: str, title_label: tk.Label):
 def main():
     global running
 
-    # ----------- INTENTO SERIAL (MODIFICADO) -----------
+    
     try:
         ser = serial.Serial(PORT, BAUD, timeout=0.2)
         print("Puerto conectado.")
     except:
         print("No se pudo conectar al puerto Serial. Modo Simulación activado.")
         ser = None
-    # ---------------------------------------------------
+    
 
     root = tk.Tk()
     root.title("GUI RS232 Local (sensores + LEDs 1..8)")
 
-    # ---------------- Top: variable selection + numeric ----------------
     top = ttk.Frame(root, padding=10)
     top.grid(row=0, column=0, sticky="nsew")
 
@@ -169,11 +168,11 @@ def main():
     lbl_num = ttk.Label(top, text="Valor: ---", font=("Segoe UI", 14))
     lbl_num.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
 
-    # ---------------- LED controls ----------------
+    
     leds_frame = ttk.LabelFrame(root, text="Control de LEDs (1..4 ON, 5..8 OFF)", padding=10)
     leds_frame.grid(row=1, column=0, sticky="ew", padx=10)
 
-    # ---------------- Log box ----------------
+    
     log_frame = ttk.LabelFrame(root, text="Log serial", padding=10)
     log_frame.grid(row=2, column=0, sticky="ew", padx=10)
 
@@ -199,7 +198,7 @@ def main():
     for i in range(4):
         make_led_row(i)
 
-    # ---------------- Plot ----------------
+    
     plot_frame = ttk.Frame(root, padding=10)
     plot_frame.grid(row=3, column=0, sticky="nsew")
 
@@ -214,14 +213,14 @@ def main():
     canvas = FigureCanvasTkAgg(fig, master=plot_frame)
     canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
 
-    # ----------- THREAD (MODIFICADO) -----------
+    
     if ser is not None:
         th = threading.Thread(target=serial_reader, args=(ser, log), daemon=True)
     else:
         th = threading.Thread(target=simulation_mode, args=(log,), daemon=True)
 
     th.start()
-    # -------------------------------------------
+    
 
     def update_ui():
         with data_lock:
