@@ -1,0 +1,276 @@
+import time
+import threading
+import math
+from collections import deque
+
+import serial
+import tkinter as tk
+from tkinter import ttk
+
+import matplotlib
+matplotlib.use("TkAgg")
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+
+
+# ---------------- Serial config ----------------
+PORT = "COM3"
+BAUD = 115200
+
+
+# ---------------- Plot config ----------------
+WINDOW_SECONDS = 10.0
+MAX_POINTS = 800
+UI_REFRESH_MS = 50
+
+
+# ---------------- Shared state ----------------
+data_lock = threading.Lock()
+
+latest = {"s1": None, "s2": None, "s3": None, "s4": None, "t": 0.0}
+
+t_buf = deque(maxlen=MAX_POINTS)
+s1_buf = deque(maxlen=MAX_POINTS)
+s2_buf = deque(maxlen=MAX_POINTS)
+s3_buf = deque(maxlen=MAX_POINTS)
+s4_buf = deque(maxlen=MAX_POINTS)
+
+selected_var = "s1"
+running = True
+
+
+def parse_line(line: str):
+    parts = line.strip().split(",")
+    if not parts:
+        return None
+
+    if parts[0] == "T" and len(parts) == 5:
+        try:
+            s1 = int(parts[1])
+            s2 = int(parts[2])
+            s3 = int(parts[3])
+            s4 = float(parts[4])
+            return ("T", s1, s2, s3, s4)
+        except:
+            return None
+
+    if parts[0] == "ACK":
+        return ("ACK", line.strip())
+
+    return None
+
+
+def serial_reader(ser: serial.Serial, log_fn):
+    global running
+    t0 = time.time()
+
+    while running:
+        try:
+            raw = ser.readline()
+            if not raw:
+                continue
+
+            line = raw.decode(errors="ignore").strip()
+            msg = parse_line(line)
+            if not msg:
+                continue
+
+            if msg[0] == "T":
+                _, s1, s2, s3, s4 = msg
+                now = time.time() - t0
+
+                with data_lock:
+                    latest.update({"s1": s1, "s2": s2, "s3": s3, "s4": s4, "t": now})
+                    t_buf.append(now)
+                    s1_buf.append(s1)
+                    s2_buf.append(s2)
+                    s3_buf.append(s3)
+                    s4_buf.append(s4)
+
+            elif msg[0] == "ACK":
+                log_fn("RX <- " + msg[1])
+
+        except:
+            time.sleep(0.1)
+
+
+# ----------- SIMULACIÓN (AGREGADO) -----------
+def simulation_mode(log_fn):
+    global running
+    t0 = time.time()
+
+    log_fn("Modo simulación activo.")
+
+    while running:
+        now = time.time() - t0
+
+        s1 = int(2000 + 1000 * math.sin(now))
+        s2 = int(1500 + 800 * math.cos(now * 0.5))
+        s3 = int(1000 + 500 * math.sin(now * 2))
+        s4 = abs(math.sin(now))
+
+        with data_lock:
+            latest.update({"s1": s1, "s2": s2, "s3": s3, "s4": s4, "t": now})
+            t_buf.append(now)
+            s1_buf.append(s1)
+            s2_buf.append(s2)
+            s3_buf.append(s3)
+            s4_buf.append(s4)
+
+        time.sleep(0.05)
+# ---------------------------------------------
+
+
+def send_led_code(ser: serial.Serial, code: int, log_fn):
+    if ser is None:
+        log_fn(f"[SIM] TX -> {code}")
+        return
+
+    ser.write((str(code) + "\n").encode())
+    log_fn(f"TX -> {code}")
+
+
+def set_selected(varname: str, title_label: tk.Label):
+    global selected_var
+    selected_var = varname
+    title_label.config(text=f"Variable seleccionada: {varname.upper()}")
+
+
+def main():
+    global running
+
+    # ----------- INTENTO SERIAL (MODIFICADO) -----------
+    try:
+        ser = serial.Serial(PORT, BAUD, timeout=0.2)
+        print("Puerto conectado.")
+    except:
+        print("No se pudo conectar al puerto Serial. Modo Simulación activado.")
+        ser = None
+    # ---------------------------------------------------
+
+    root = tk.Tk()
+    root.title("GUI RS232 Local (sensores + LEDs 1..8)")
+
+    # ---------------- Top: variable selection + numeric ----------------
+    top = ttk.Frame(root, padding=10)
+    top.grid(row=0, column=0, sticky="nsew")
+
+    title_sel = ttk.Label(top, text="Variable seleccionada: S1")
+    title_sel.grid(row=0, column=0, columnspan=4, sticky="w")
+
+    ttk.Button(top, text="S1 (ADC)", command=lambda: set_selected("s1", title_sel)).grid(row=1, column=0, padx=5, pady=5, sticky="ew")
+    ttk.Button(top, text="S2 (ADC)", command=lambda: set_selected("s2", title_sel)).grid(row=1, column=1, padx=5, pady=5, sticky="ew")
+    ttk.Button(top, text="S3 (ADC)", command=lambda: set_selected("s3", title_sel)).grid(row=1, column=2, padx=5, pady=5, sticky="ew")
+    ttk.Button(top, text="S4 (|a|) [g]", command=lambda: set_selected("s4", title_sel)).grid(row=1, column=3, padx=5, pady=5, sticky="ew")
+
+    lbl_status = ttk.Label(top, text="Estado: esperando datos...", foreground="gray")
+    lbl_status.grid(row=2, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    lbl_num = ttk.Label(top, text="Valor: ---", font=("Segoe UI", 14))
+    lbl_num.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+
+    # ---------------- LED controls ----------------
+    leds_frame = ttk.LabelFrame(root, text="Control de LEDs (1..4 ON, 5..8 OFF)", padding=10)
+    leds_frame.grid(row=1, column=0, sticky="ew", padx=10)
+
+    # ---------------- Log box ----------------
+    log_frame = ttk.LabelFrame(root, text="Log serial", padding=10)
+    log_frame.grid(row=2, column=0, sticky="ew", padx=10)
+
+    log_txt = tk.Text(log_frame, height=6, width=80)
+    log_txt.grid(row=0, column=0, sticky="ew")
+
+    def log(msg: str):
+        log_txt.insert("end", msg + "\n")
+        log_txt.see("end")
+
+    def make_led_row(i):
+        ttk.Label(leds_frame, text=f"LED {i+1}").grid(row=i, column=0, padx=5, pady=4, sticky="w")
+
+        def on():
+            send_led_code(ser, i + 1, log)
+
+        def off():
+            send_led_code(ser, i + 5, log)
+
+        ttk.Button(leds_frame, text=f"ON ({i+1})", command=on).grid(row=i, column=1, padx=5, pady=4)
+        ttk.Button(leds_frame, text=f"OFF ({i+5})", command=off).grid(row=i, column=2, padx=5, pady=4)
+
+    for i in range(4):
+        make_led_row(i)
+
+    # ---------------- Plot ----------------
+    plot_frame = ttk.Frame(root, padding=10)
+    plot_frame.grid(row=3, column=0, sticky="nsew")
+
+    fig = Figure(figsize=(8, 4), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.grid(True)
+    ax.set_xlabel("Tiempo [s]")
+    ax.set_ylabel("Valor")
+
+    line_plot, = ax.plot([], [], lw=1.5)
+
+    canvas = FigureCanvasTkAgg(fig, master=plot_frame)
+    canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+
+    # ----------- THREAD (MODIFICADO) -----------
+    if ser is not None:
+        th = threading.Thread(target=serial_reader, args=(ser, log), daemon=True)
+    else:
+        th = threading.Thread(target=simulation_mode, args=(log,), daemon=True)
+
+    th.start()
+    # -------------------------------------------
+
+    def update_ui():
+        with data_lock:
+            if latest["s1"] is None:
+                lbl_status.config(text="Estado: esperando datos...", foreground="gray")
+                lbl_num.config(text="Valor: ---")
+            else:
+                lbl_status.config(text="Estado: recibiendo (~20 Hz)", foreground="green")
+                val = latest.get(selected_var, None)
+
+                if selected_var == "s4":
+                    lbl_num.config(text=f"Valor: {val:.4f} g")
+                else:
+                    lbl_num.config(text=f"Valor: {val:d} (ADC)")
+
+                T = list(t_buf)
+                Y = list(globals()[selected_var + "_buf"])
+
+                if len(T) > 2:
+                    line_plot.set_data(T, Y)
+                    ax.set_xlim(max(0, T[-1] - WINDOW_SECONDS), T[-1] + 0.05)
+
+                    y_min = min(Y)
+                    y_max = max(Y)
+                    if y_min == y_max:
+                        y_min -= 1
+                        y_max += 1
+                    ax.set_ylim(y_min - 0.05*(y_max - y_min),
+                                y_max + 0.05*(y_max - y_min))
+
+        canvas.draw_idle()
+        root.after(UI_REFRESH_MS, update_ui)
+
+    def on_close():
+        global running
+        running = False
+        if ser is not None:
+            try:
+                ser.close()
+            except:
+                pass
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", on_close)
+
+    log("Abre COM3 a 115200. Cierra Thonny para liberar el puerto.")
+    root.after(UI_REFRESH_MS, update_ui)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
